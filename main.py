@@ -24,7 +24,13 @@ def get_api_key(x_api_key: Optional[str] = Header(None)):
     response = supabase.table("api_keys").select("*").eq("api_key", x_api_key).execute()
     if not response.data:
         raise HTTPException(status_code=401, detail="Invalid API Key")
-    return x_api_key
+
+    user = response.data[0]
+    
+    if user["credits"] <= 0:
+        raise HTTPException(status_code=402, detail="Out of credits. Please recharge.")
+    
+    return user
 
 
 # ---- Endpoint: User signs in & gets an API key ----
@@ -37,8 +43,8 @@ def signin_user(email: str):
     
     # generate new API key
     new_key = secrets.token_hex(16)  # 32-char hex key
-    supabase.table("api_keys").insert({"user_email": email, "api_key": new_key}).execute()
-    return {"message": "Signed in successfully", "api_key": new_key}
+    supabase.table("api_keys").insert({"user_email": email, "api_key": new_key, "credits":100}).execute()
+    return {"message": "Signed in successfully", "api_key": new_key, "credits": 100}
 
 
 # ---- Function to expose ----
@@ -46,7 +52,31 @@ def add(a: int, b: int):
     return a + b
 
 
-# ---- Protected API ----
 @app.get("/add")
-def add_numbers(a: int, b: int, api_key: str = Depends(get_api_key)):
-    return {"result": add(a, b)}
+def add_numbers(a: int, b: int, user = Depends(get_api_key)):
+    supabase.table("api_keys").update({"credits": user["credits"] - 1}).eq("api_key", user["api_key"]).execute()
+    
+    # Log usage
+    supabase.table("usage_logs").insert({
+        "api_key": user["api_key"],
+        "endpoint": "/add",
+        "tokens_used": 1
+    }).execute()
+    
+    return {"result": add(a, b), "remaining_credits": user["credits"] - 1}
+
+# ---- Recharge Endpoint ----
+@app.post("/recharge")
+def recharge(api_key: str, amount: int):
+    """Admin/User can recharge credits"""
+    response = supabase.table("api_keys").select("*").eq("api_key", api_key).execute()
+    if not response.data:
+        raise HTTPException(status_code=404, detail="Invalid API Key")
+    
+    if not isinstance(amount/10, int):
+        raise HTTPException(status_code=400, detail="Invalid Amount, Please recharge with the mutliple of 10")
+    
+    user = response.data[0]
+    new_credits = user["credits"] + amount//10
+    supabase.table("api_keys").update({"credits": new_credits}).eq("api_key", api_key).execute()
+    return {"message": "Recharged successfully", "credits": new_credits}
