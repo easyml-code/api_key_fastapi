@@ -3,6 +3,9 @@ from typing import Optional
 from supabase import create_client, Client
 import secrets
 from dotenv import load_dotenv
+import stripe
+from fastapi.responses import RedirectResponse
+import asyncio
 import os
 
 load_dotenv()
@@ -10,8 +13,9 @@ load_dotenv()
 # ---- Supabase Setup ----
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+STRIPE_SECRET = os.getenv("STRIPE_SECRET_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
+stripe.api_key = STRIPE_SECRET
 app = FastAPI()
 
 
@@ -66,6 +70,22 @@ def add_numbers(a: int, b: int, user = Depends(get_api_key)):
     return {"result": add(a, b), "remaining_credits": user["credits"] - 1}
 
 # ---- Recharge Endpoint ----
+# @app.post("/recharge")
+# def recharge(api_key: str, amount: int):
+#     """Admin/User can recharge credits"""
+#     response = supabase.table("api_keys").select("*").eq("api_key", api_key).execute()
+#     if not response.data:
+#         raise HTTPException(status_code=404, detail="Invalid API Key")
+    
+#     if not isinstance(amount/10, int):
+#         raise HTTPException(status_code=400, detail="Invalid Amount, Please recharge with the mutliple of 10")
+    
+#     user = response.data[0]
+#     new_credits = user["credits"] + amount//10
+#     supabase.table("api_keys").update({"credits": new_credits}).eq("api_key", api_key).execute()
+#     return {"message": "Recharged successfully", "credits": new_credits}
+
+YOUR_DOMAIN = "http://localhost:4242"
 @app.post("/recharge")
 def recharge(api_key: str, amount: int):
     """Admin/User can recharge credits"""
@@ -73,10 +93,31 @@ def recharge(api_key: str, amount: int):
     if not response.data:
         raise HTTPException(status_code=404, detail="Invalid API Key")
     
-    if not isinstance(amount/10, int):
-        raise HTTPException(status_code=400, detail="Invalid Amount, Please recharge with the mutliple of 10")
-    
-    user = response.data[0]
-    new_credits = user["credits"] + amount//10
-    supabase.table("api_keys").update({"credits": new_credits}).eq("api_key", api_key).execute()
-    return {"message": "Recharged successfully", "credits": new_credits}
+    # ✅ Ensure amount is multiple of 10
+    if amount % 10 != 0:
+        raise HTTPException(status_code=400, detail="Invalid Amount, Please recharge with a multiple of 10")
+
+    try:
+        # ✅ Create a dynamic Checkout Session for the given amount
+        checkout_session = stripe.checkout.Session.create(
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": "usd",
+                        "product_data": {
+                            "name": f"API Credit Recharge (${amount})",
+                        },
+                        "unit_amount": amount * 100,  # convert dollars to cents
+                    },
+                    "quantity": 1,
+                },
+            ],
+            mode="payment",
+            success_url=YOUR_DOMAIN + "/success.html",
+            cancel_url=YOUR_DOMAIN + "/cancel.html",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    print("\n\n", checkout_session.url, "\n\n")
+    return RedirectResponse(url=checkout_session.url, status_code=303)
